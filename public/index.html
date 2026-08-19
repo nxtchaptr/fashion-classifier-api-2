@@ -97,16 +97,16 @@
           <p class="samples-title">Or try a sample item:</p>
           <div class="sample-chips">
             <button class="sample-chip" onclick="loadSample('kurta')">
-              <span>Men Kurta</span>
+              <span>👔 Men Kurta</span>
             </button>
             <button class="sample-chip" onclick="loadSample('saree')">
-              <span>Silk Saree</span>
+              <span>🥻 Silk Saree</span>
             </button>
             <button class="sample-chip" onclick="loadSample('hoodie')">
-              <span>Sweatshirt</span>
+              <span>🧥 Sweatshirt</span>
             </button>
             <button class="sample-chip" onclick="loadSample('blouse')">
-              <span>Blue Blouse</span>
+              <span>👚 Blue Blouse</span>
             </button>
           </div>
         </div>
@@ -127,36 +127,8 @@
         </div>
 
         <div id="loadingState" class="loading-state" style="display:none;">
-          <div class="upload-animation-container">
-            <div class="scanner-preview-wrapper" id="scannerWrapper">
-              <img id="scannerPreviewImg" src="" alt="Scanning Preview">
-              <div class="laser-scanner-line"></div>
-              <div class="scan-grid-overlay"></div>
-            </div>
-            <div class="live-timer-badge">
-              <span class="pulse-ring"></span>
-              <span class="timer-label">Inference Timer:</span>
-              <span id="liveTimerValue" class="timer-number">0.00s</span>
-            </div>
-            <div class="pipeline-tracker">
-              <div class="pipeline-step active" id="stepUpload">
-                <span class="step-num">1</span>
-                <span class="step-text">Uploading & Preprocessing</span>
-              </div>
-              <div class="pipeline-step" id="stepResnet">
-                <span class="step-num">2</span>
-                <span class="step-text">ResNet-101 Spatial Feature Encoding</span>
-              </div>
-              <div class="pipeline-step" id="stepBeam">
-                <span class="step-num">3</span>
-                <span class="step-text">Constrained Beam Search Decoding (k=5)</span>
-              </div>
-              <div class="pipeline-step" id="stepAttention">
-                <span class="step-num">4</span>
-                <span class="step-text">Spatial Attention Heatmap Synthesis</span>
-              </div>
-            </div>
-          </div>
+          <div class="spinner"></div>
+          <p>Running ResNet-101 + Constrained Beam Search...</p>
         </div>
 
         <div id="resultsContent" class="results-content" style="display:none;">
@@ -176,13 +148,6 @@
                 <div class="metric-card">
                   <span class="metric-label">Confidence</span>
                   <span class="metric-value accent-text" id="confScore">98.5%</span>
-                </div>
-                <div class="metric-card">
-                  <span class="metric-label">Inference Time</span>
-                  <div class="inference-time-wrapper">
-                    <span class="metric-value latency-text" id="latencyScore">-- ms</span>
-                    <span class="latency-tier-badge" id="latencyTierBadge">Fast</span>
-                  </div>
                 </div>
                 <div class="metric-card">
                   <span class="metric-label">Target Gender</span>

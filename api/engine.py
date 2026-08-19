@@ -2,7 +2,6 @@ import os
 import sys
 import gc
 import io
-import time
 import json
 import base64
 import requests
@@ -142,28 +141,19 @@ class AtlasEngine:
 
                 vocab_size = len(self.word_map) if self.word_map else 58
 
+                # Instantiate models on meta device to avoid allocating duplicate parameter arrays
+                with torch.device('meta'):
+                    self.encoder = models.Encoder()
+                    self.decoder = models.DecoderWithAttention(
+                        attention_dim=512,
+                        embed_dim=512,
+                        decoder_dim=512,
+                        vocab_size=vocab_size,
+                        dropout=0.0
+                    )
+
                 if 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
-                    with torch.device('meta'):
-                        self.encoder = models.Encoder(pretrained=False)
-                        self.decoder = models.DecoderWithAttention(
-                            attention_dim=512,
-                            embed_dim=512,
-                            decoder_dim=512,
-                            vocab_size=vocab_size,
-                            dropout=0.0
-                        )
                     self.encoder.load_state_dict(checkpoint['encoder_state_dict'], assign=True)
-                    self.decoder.load_state_dict(checkpoint['decoder_state_dict'], assign=True)
-                elif 'decoder_state_dict' in checkpoint:
-                    self.encoder = models.Encoder(pretrained=True).to(self.device)
-                    with torch.device('meta'):
-                        self.decoder = models.DecoderWithAttention(
-                            attention_dim=512,
-                            embed_dim=512,
-                            decoder_dim=512,
-                            vocab_size=vocab_size,
-                            dropout=0.0
-                        )
                     self.decoder.load_state_dict(checkpoint['decoder_state_dict'], assign=True)
                 elif 'encoder' in checkpoint and 'decoder' in checkpoint:
                     self.encoder = checkpoint['encoder'].to(self.device).eval()
@@ -296,17 +286,12 @@ class AtlasEngine:
         k = beam_size
         vocab_size = len(self.word_map)
 
-        enc_dtype = next(self.encoder.parameters()).dtype
-        dec_dtype = next(self.decoder.parameters()).dtype
-
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        image = transform(image_pil.convert('RGB')).to(device=self.device, dtype=enc_dtype).unsqueeze(0)
-
-        t_start = time.perf_counter()
+        image = transform(image_pil.convert('RGB')).to(self.device).unsqueeze(0)
 
         with torch.inference_mode():
             encoder_out = self.encoder(image)
@@ -314,16 +299,13 @@ class AtlasEngine:
             encoder_dim = encoder_out.size(3)
 
             encoder_out = encoder_out.view(1, -1, encoder_dim)
-            if encoder_out.dtype != dec_dtype:
-                encoder_out = encoder_out.to(dtype=dec_dtype)
-
             num_pixels = encoder_out.size(1)
             encoder_out = encoder_out.expand(k, num_pixels, encoder_dim)
 
             k_prev_words = torch.LongTensor([[self.word_map['<start>']]] * k).to(self.device)
             seqs = k_prev_words
-            top_k_scores = torch.zeros(k, 1, dtype=dec_dtype).to(self.device)
-            seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size, dtype=dec_dtype).to(self.device)
+            top_k_scores = torch.zeros(k, 1).to(self.device)
+            seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size).to(self.device)
 
             complete_seqs = []
             complete_seqs_alpha = []
@@ -387,13 +369,10 @@ class AtlasEngine:
                     break
                 step += 1
 
-            t_elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
-
             if not complete_seqs:
                 return {
                     "taxonomy_path": ["Unknown"],
                     "confidence_score": 0.0,
-                    "inference_time_ms": t_elapsed_ms,
                     "attention_image_base64": None
                 }
 
@@ -423,7 +402,6 @@ class AtlasEngine:
                 "taxonomy_path": tokens,
                 "confidence_score": round(prob, 4),
                 "log_prob_score": round(log_prob, 4),
-                "inference_time_ms": t_elapsed_ms,
                 "attention_image_base64": attention_b64
             }
 

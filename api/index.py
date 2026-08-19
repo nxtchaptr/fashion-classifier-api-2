@@ -47,7 +47,6 @@ class CategoryPredictionResponse(BaseModel):
     taxonomy_path: List[str]
     confidence_score: float
     log_prob_score: float
-    inference_time_ms: Optional[float] = None
     attention_image_base64: Optional[str] = None
 
 @app.get("/api/health")
