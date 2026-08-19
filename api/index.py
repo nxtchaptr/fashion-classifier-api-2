@@ -1,9 +1,12 @@
+import os
 import io
 import base64
 import requests
 from typing import Optional, List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 from PIL import Image
 
@@ -27,6 +30,7 @@ app.add_middleware(
 )
 
 engine = AtlasEngine.get_instance()
+PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
 
 class UrlPredictionRequest(BaseModel):
     image_url: str
@@ -117,3 +121,12 @@ async def predict_image_base64(request: Base64PredictionRequest):
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
     return result
+
+# Serve static web frontend for testing
+if os.path.exists(PUBLIC_DIR):
+    @app.get("/")
+    def serve_index():
+        return FileResponse(os.path.join(PUBLIC_DIR, "index.html"))
+
+    app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="public")
+

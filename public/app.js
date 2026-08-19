@@ -7,11 +7,16 @@ const SAMPLES = {
 };
 
 let currentTab = 'upload';
+let currentSnippet = 'curl';
 let latestJsonResponse = null;
+let currentImageFile = null;
+let taxonomyData = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   checkApiHealth();
   setupDropZone();
+  setupClipboardPaste();
+  updateSnippet();
 });
 
 // Switch Tab
@@ -31,14 +36,30 @@ async function checkApiHealth() {
     const res = await fetch('/api/health');
     if (res.ok) {
       const data = await res.json();
-      text.textContent = data.model_loaded ? 'Model Ready (ResNet-101)' : 'API Connected';
+      text.textContent = data.model_loaded ? 'Model Ready (ResNet-101)' : 'API Ready (On-Demand)';
       pill.style.borderColor = 'rgba(16, 185, 129, 0.4)';
     } else {
       text.textContent = 'API Initializing';
     }
   } catch (err) {
-    text.textContent = 'Local Standby';
+    text.textContent = 'Standby Mode';
   }
+}
+
+// Setup Clipboard Paste
+function setupClipboardPaste() {
+  window.addEventListener('paste', (e) => {
+    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+    for (let index in items) {
+      const item = items[index];
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        switchTab('upload');
+        handleFile(blob);
+        break;
+      }
+    }
+  });
 }
 
 // Drop Zone Setup
@@ -79,6 +100,7 @@ function handleFile(file) {
     alert('Please select a valid image file (JPG, PNG, WebP).');
     return;
   }
+  currentImageFile = file;
 
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -104,13 +126,14 @@ async function classifyImageFile(file) {
     });
 
     if (!response.ok) {
-      const err = await response.json();
+      const err = await response.json().catch(() => ({ detail: 'Server Error' }));
       throw new Error(err.detail || 'Prediction failed');
     }
 
     const data = await response.json();
     const elapsed = Math.round(performance.now() - startTime);
     renderResults(data, elapsed);
+    checkApiHealth();
   } catch (error) {
     alert(`Error: ${error.message}`);
     setLoading(false);
@@ -138,13 +161,14 @@ async function predictFromUrl() {
     });
 
     if (!response.ok) {
-      const err = await response.json();
+      const err = await response.json().catch(() => ({ detail: 'Server Error' }));
       throw new Error(err.detail || 'Prediction failed');
     }
 
     const data = await response.json();
     const elapsed = Math.round(performance.now() - startTime);
     renderResults(data, elapsed);
+    checkApiHealth();
   } catch (error) {
     alert(`Error: ${error.message}`);
     setLoading(false);
@@ -182,8 +206,10 @@ function renderResults(data, elapsedMs) {
   });
 
   // Metrics
-  document.getElementById('confScore').textContent = `${(data.confidence_score * 100).toFixed(1)}%`;
+  const conf = data.confidence_score ? (data.confidence_score * 100).toFixed(1) : '0.0';
+  document.getElementById('confScore').textContent = `${conf}%`;
   document.getElementById('genderBadge').textContent = data.gender || 'Unassigned';
+  document.getElementById('subCatBadge').textContent = data.sub_category || 'General';
   document.getElementById('inferTime').textContent = `${elapsedMs}ms`;
 
   // Attention Map
@@ -209,5 +235,110 @@ function setLoading(isLoading) {
 function copyJson() {
   if (!latestJsonResponse) return;
   navigator.clipboard.writeText(JSON.stringify(latestJsonResponse, null, 2));
-  alert('JSON copied to clipboard!');
+  alert('JSON response copied to clipboard!');
 }
+
+// Snippet Generation
+function switchSnippet(type) {
+  currentSnippet = type;
+  document.querySelectorAll('.snippet-tab').forEach(b => {
+    b.classList.toggle('active', b.textContent.toLowerCase().includes(type));
+  });
+  updateSnippet();
+}
+
+function updateSnippet() {
+  const origin = window.location.origin;
+  const beamSize = document.getElementById('beamSize')?.value || 5;
+  const codeEl = document.getElementById('codeSnippetText');
+  if (!codeEl) return;
+
+  if (currentSnippet === 'curl') {
+    codeEl.textContent = `curl -X POST "${origin}/api/predict?beam_size=${beamSize}" \\
+  -F "file=@product_image.jpg"`;
+  } else if (currentSnippet === 'python') {
+    codeEl.textContent = `import requests
+
+url = "${origin}/api/predict"
+params = {"beam_size": ${beamSize}}
+files = {"file": open("product_image.jpg", "rb")}
+
+response = requests.post(url, params=params, files=files)
+data = response.json()
+print("Taxonomy Path:", data["taxonomy_path"])
+print("Confidence:", data["confidence_score"])`;
+  } else if (currentSnippet === 'js') {
+    codeEl.textContent = `const formData = new FormData();
+formData.append("file", fileInputElement.files[0]);
+
+const response = await fetch("${origin}/api/predict?beam_size=${beamSize}", {
+  method: "POST",
+  body: formData
+});
+const data = await response.json();
+console.log(data);`;
+  }
+}
+
+function copySnippet() {
+  const code = document.getElementById('codeSnippetText').textContent;
+  navigator.clipboard.writeText(code);
+  alert('Integration code copied to clipboard!');
+}
+
+// Taxonomy Modal
+async function openTaxonomyModal() {
+  const modal = document.getElementById('taxonomyModal');
+  const body = document.getElementById('taxonomyModalBody');
+  modal.classList.add('active');
+
+  if (!taxonomyData) {
+    body.innerHTML = '<div class="spinner"></div><p style="text-align:center;color:#94a3b8;">Fetching complete taxonomy tree...</p>';
+    try {
+      const res = await fetch('/api/taxonomy');
+      const data = await res.json();
+      taxonomyData = data;
+      renderTaxonomyTree(data);
+    } catch (e) {
+      body.innerHTML = `<p style="color:#ef4444;text-align:center;">Failed to load taxonomy: ${e.message}</p>`;
+    }
+  } else {
+    renderTaxonomyTree(taxonomyData);
+  }
+}
+
+function closeTaxonomyModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('taxonomyModal').classList.remove('active');
+}
+
+function renderTaxonomyTree(data) {
+  const body = document.getElementById('taxonomyModalBody');
+  const tree = data.taxonomy_tree || {};
+
+  let html = `<p class="modal-sub">Total Hierarchy Categories: <strong>${data.total_paths || 52} paths</strong></p><div class="tree-container">`;
+
+  for (const gender in tree) {
+    html += `<div class="tree-gender-group">
+      <div class="tree-gender-title">👤 ${gender}</div>
+      <div class="tree-master-list">`;
+    for (const master in tree[gender]) {
+      html += `<div class="tree-master-item">
+        <span class="tree-master-badge">📂 ${master}</span>
+        <div class="tree-sub-chips">`;
+      const subCats = Object.keys(tree[gender][master]);
+      if (subCats.length === 0) {
+        html += `<span class="tree-sub-leaf">${master}</span>`;
+      } else {
+        subCats.forEach(sub => {
+          html += `<span class="tree-sub-leaf">${sub}</span>`;
+        });
+      }
+      html += `</div></div>`;
+    }
+    html += `</div></div>`;
+  }
+  html += `</div>`;
+  body.innerHTML = html;
+}
+

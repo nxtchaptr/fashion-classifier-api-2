@@ -32,13 +32,17 @@
         </div>
       </div>
       <div class="header-actions">
+        <button class="ghost-btn" onclick="openTaxonomyModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          Taxonomy Tree (52)
+        </button>
         <div class="status-indicator" id="statusPill">
           <span class="pulse-dot"></span>
           <span id="statusText">Checking API...</span>
         </div>
         <a href="/api/docs" target="_blank" class="docs-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-          OpenAPI Docs
+          API Docs
         </a>
       </div>
     </header>
@@ -49,7 +53,7 @@
       <section class="card input-card">
         <div class="card-header">
           <h2>1. Select Product Image</h2>
-          <span class="card-tag">Upload or URL</span>
+          <span class="card-tag">Upload, URL or Paste</span>
         </div>
 
         <div class="tabs">
@@ -64,7 +68,7 @@
             <div class="drop-icon">
               <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
             </div>
-            <p class="drop-title">Drag & drop product image here</p>
+            <p class="drop-title">Drag & drop image or <kbd class="kbd-hint">Ctrl + V</kbd> to paste</p>
             <p class="drop-sub">or <span class="accent-link">browse from your computer</span></p>
             <span class="file-limits">Supports JPG, PNG, WEBP</span>
           </div>
@@ -81,7 +85,7 @@
         <!-- Settings -->
         <div class="settings-bar">
           <label for="beamSize">Constrained Beam Size:</label>
-          <select id="beamSize" class="select-input">
+          <select id="beamSize" class="select-input" onchange="updateSnippet()">
             <option value="3">3 (Faster)</option>
             <option value="5" selected>5 (Recommended)</option>
             <option value="8">8 (Exhaustive)</option>
@@ -92,10 +96,18 @@
         <div class="samples-section">
           <p class="samples-title">Or try a sample item:</p>
           <div class="sample-chips">
-            <button class="sample-chip" onclick="loadSample('kurta')">Men Kurta</button>
-            <button class="sample-chip" onclick="loadSample('saree')">Silk Saree</button>
-            <button class="sample-chip" onclick="loadSample('hoodie')">Sweatshirt</button>
-            <button class="sample-chip" onclick="loadSample('blouse')">Royal Blue Blouse</button>
+            <button class="sample-chip" onclick="loadSample('kurta')">
+              <span>👔 Men Kurta</span>
+            </button>
+            <button class="sample-chip" onclick="loadSample('saree')">
+              <span>🥻 Silk Saree</span>
+            </button>
+            <button class="sample-chip" onclick="loadSample('hoodie')">
+              <span>🧥 Sweatshirt</span>
+            </button>
+            <button class="sample-chip" onclick="loadSample('blouse')">
+              <span>👚 Blue Blouse</span>
+            </button>
           </div>
         </div>
       </section>
@@ -111,7 +123,7 @@
           <div class="empty-icon">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
           </div>
-          <p>Upload a product image or click a sample to see hierarchical classification.</p>
+          <p>Upload a product image, paste from clipboard, or click a sample to see hierarchical classification.</p>
         </div>
 
         <div id="loadingState" class="loading-state" style="display:none;">
@@ -141,6 +153,10 @@
                   <span class="metric-label">Target Gender</span>
                   <span class="metric-value" id="genderBadge">Men</span>
                 </div>
+                <div class="metric-card">
+                  <span class="metric-label">Sub Category</span>
+                  <span class="metric-value" id="subCatBadge">-</span>
+                </div>
               </div>
             </div>
           </div>
@@ -149,7 +165,7 @@
           <div class="attention-section">
             <div class="section-title-row">
               <h3>Spatial Attention Visualizer</h3>
-              <span class="badge-sub">Model Focus by Taxonomy Step</span>
+              <span class="badge-sub">Model Spatial Attention Heatmap per Token</span>
             </div>
             <div class="attention-box" id="attentionBox">
               <img id="attentionImg" src="" alt="Attention Heatmap">
@@ -168,20 +184,38 @@
       </section>
     </main>
 
-    <!-- Curl Snippet Box -->
+    <!-- Code Snippet Box -->
     <section class="curl-section card">
       <div class="card-header">
-        <h3>cURL API Snippet</h3>
-        <span class="card-tag">Integrate anywhere</span>
+        <h3>API Integration Snippet</h3>
+        <div class="snippet-tabs">
+          <button class="snippet-tab active" onclick="switchSnippet('curl')">cURL</button>
+          <button class="snippet-tab" onclick="switchSnippet('python')">Python</button>
+          <button class="snippet-tab" onclick="switchSnippet('js')">JavaScript</button>
+        </div>
       </div>
-      <pre class="curl-code"><code>curl -X POST "https://your-vercel-domain.vercel.app/api/predict" \
-  -F "file=@product_image.jpg" \
-  -F "beam_size=5"</code></pre>
+      <div class="snippet-body">
+        <pre class="curl-code"><code id="codeSnippetText"></code></pre>
+        <button class="copy-btn snippet-copy" onclick="copySnippet()">Copy Code</button>
+      </div>
     </section>
+
+    <!-- Taxonomy Modal -->
+    <div id="taxonomyModal" class="modal-overlay" onclick="closeTaxonomyModal(event)">
+      <div class="modal-card" onclick="event.stopPropagation()">
+        <div class="modal-header">
+          <h3>Full 52-Category Clothing Taxonomy Tree</h3>
+          <button class="modal-close-btn" onclick="closeTaxonomyModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="taxonomyModalBody">
+          <div class="spinner"></div>
+        </div>
+      </div>
+    </div>
 
     <!-- Footer -->
     <footer class="footer">
-      <p>Powered by Atlas ResNet-101 Attention Model & Fast Vercel Serverless Python Engine.</p>
+      <p>Atlas AI — Hierarchical Product Categorization Engine powered by PyTorch ResNet-101 & Spatial Attention.</p>
     </footer>
   </div>
 
