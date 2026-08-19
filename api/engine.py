@@ -27,19 +27,23 @@ sys.modules['models'] = models
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+import gzip
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORD_MAP_FILE = os.path.join(CURRENT_DIR, "word_map.json")
 TAXONOMY_FILE = os.path.join(CURRENT_DIR, "taxonomy_paths.json")
+GZ_MODEL_FILE = os.path.join(CURRENT_DIR, "model_weights.pt.gz")
 LOCAL_MODEL_FILE = os.path.join(CURRENT_DIR, "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth")
-CLEAN_MODEL_FILE = os.path.join(CURRENT_DIR, "model_weights_bf16.pth")
 
 DEFAULT_MODEL_PATHS = [
-    CLEAN_MODEL_FILE,
-    os.path.join(CURRENT_DIR, "model_weights_clean.pth"),
+    GZ_MODEL_FILE,
+    os.path.join(CURRENT_DIR, "model_weights.pt"),
     LOCAL_MODEL_FILE,
     os.path.join(CURRENT_DIR, "..", "..", "drive-files", "trained_model.pth"),
     os.path.join(CURRENT_DIR, "..", "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
     os.path.join(CURRENT_DIR, "..", "drive-files", "trained_model.pth"),
     os.path.join(CURRENT_DIR, "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    "/tmp/model_weights.pt.gz",
     "/tmp/model_weights.pth",
     "/tmp/BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"
 ]
@@ -108,21 +112,29 @@ class AtlasEngine:
 
         model_path = None
         for p in DEFAULT_MODEL_PATHS:
-            if os.path.exists(p) and os.path.getsize(p) > 1000000:
+            if os.path.exists(p) and os.path.getsize(p) > 100000:
                 model_path = p
                 break
 
         custom_url = os.environ.get("MODEL_DOWNLOAD_URL")
         if not model_path and custom_url:
             try:
-                model_path = download_direct_url(custom_url, LOCAL_MODEL_FILE)
+                dest = GZ_MODEL_FILE if custom_url.endswith('.gz') else LOCAL_MODEL_FILE
+                model_path = download_direct_url(custom_url, dest)
             except Exception as e:
                 print(f"[Error] Failed to download model from MODEL_DOWNLOAD_URL ({custom_url}): {e}")
 
         if model_path and os.path.exists(model_path):
             try:
                 print(f"Loading Atlas model from: {model_path} (optimized for low RAM)...")
-                checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+                
+                if model_path.endswith('.gz'):
+                    with gzip.open(model_path, 'rb') as gz_f:
+                        buf = io.BytesIO(gz_f.read())
+                    checkpoint = torch.load(buf, map_location=self.device, weights_only=True)
+                    del buf
+                else:
+                    checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
 
                 if 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
                     enc_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in checkpoint['encoder_state_dict'].items()}
@@ -334,39 +346,38 @@ class AtlasEngine:
 
     def _generate_attention_b64(self, image_pil: Image.Image, seq, alphas):
         try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            import matplotlib.cm as cm
-            import skimage.transform
+            from PIL import ImageDraw
 
-            image = image_pil.convert('RGB').resize([14 * 24, 14 * 24], Image.LANCZOS)
-            words = [self.rev_word_map[ind] for ind in seq]
-            alphas_tensor = torch.FloatTensor(alphas)
+            words = [self.rev_word_map[ind] for ind in seq if self.rev_word_map[ind] not in ('<start>', '<end>')]
+            if not words:
+                return None
+
+            alphas_tensor = torch.FloatTensor(alphas)[:len(words)].unsqueeze(1)  # [N, 1, 14, 14]
+            upsampled = F.interpolate(alphas_tensor, size=(224, 224), mode='bilinear', align_corners=False).squeeze(1).numpy()
+            base_img = image_pil.convert('RGB').resize((224, 224), Image.Resampling.BILINEAR)
 
             num_words = len(words)
-            cols = min(5, num_words)
-            rows = int(np.ceil(num_words / float(cols)))
-            fig = plt.figure(figsize=(cols * 2.8, rows * 2.8))
+            total_w = 224 * num_words
+            composite = Image.new('RGB', (total_w, 224 + 32), color=(10, 13, 20))
+            draw = ImageDraw.Draw(composite)
 
-            for t in range(num_words):
-                ax = fig.add_subplot(rows, cols, t + 1)
-                ax.text(0, 1, '%s' % (words[t]), color='black', backgroundcolor='white', fontsize=10, weight='bold')
-                ax.imshow(image)
-                current_alpha = alphas_tensor[t, :]
-                alpha_img = skimage.transform.pyramid_expand(current_alpha.numpy(), upscale=24, sigma=8)
-                if t == 0:
-                    ax.imshow(alpha_img, alpha=0)
-                else:
-                    ax.imshow(alpha_img, alpha=0.6, cmap=cm.Greys_r)
-                ax.axis('off')
+            for i, (word, alpha_map) in enumerate(zip(words, upsampled)):
+                x_offset = i * 224
+                # Normalize heatmap
+                a_min, a_max = alpha_map.min(), alpha_map.max()
+                alpha_norm = (alpha_map - a_min) / (a_max - a_min + 1e-8)
+                alpha_mask = Image.fromarray((alpha_norm * 180).astype('uint8'), mode='L')
 
-            plt.tight_layout()
+                # Highlight overlay
+                heat_overlay = Image.new('RGB', (224, 224), (245, 158, 11))
+                highlighted = Image.composite(heat_overlay, base_img, alpha_mask)
+
+                composite.paste(highlighted, (x_offset, 32))
+                draw.text((x_offset + 12, 8), f"Step {i+1}: {word}", fill=(248, 250, 252))
+
             buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
-            plt.close(fig)
-            buf.seek(0)
-            return base64.b64encode(buf.read()).decode('utf-8')
+            composite.save(buf, format='JPEG', quality=85)
+            return base64.b64encode(buf.getvalue()).decode('utf-8')
         except Exception as e:
             print(f"Error generating attention map: {e}")
             return None
