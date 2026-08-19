@@ -296,12 +296,15 @@ class AtlasEngine:
         k = beam_size
         vocab_size = len(self.word_map)
 
+        enc_dtype = next(self.encoder.parameters()).dtype
+        dec_dtype = next(self.decoder.parameters()).dtype
+
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        image = transform(image_pil.convert('RGB')).to(self.device).unsqueeze(0)
+        image = transform(image_pil.convert('RGB')).to(device=self.device, dtype=enc_dtype).unsqueeze(0)
 
         t_start = time.perf_counter()
 
@@ -311,13 +314,16 @@ class AtlasEngine:
             encoder_dim = encoder_out.size(3)
 
             encoder_out = encoder_out.view(1, -1, encoder_dim)
+            if encoder_out.dtype != dec_dtype:
+                encoder_out = encoder_out.to(dtype=dec_dtype)
+
             num_pixels = encoder_out.size(1)
             encoder_out = encoder_out.expand(k, num_pixels, encoder_dim)
 
             k_prev_words = torch.LongTensor([[self.word_map['<start>']]] * k).to(self.device)
             seqs = k_prev_words
-            top_k_scores = torch.zeros(k, 1).to(self.device)
-            seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size).to(self.device)
+            top_k_scores = torch.zeros(k, 1, dtype=dec_dtype).to(self.device)
+            seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size, dtype=dec_dtype).to(self.device)
 
             complete_seqs = []
             complete_seqs_alpha = []
