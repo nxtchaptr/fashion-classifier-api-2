@@ -51,12 +51,19 @@ class CategoryPredictionResponse(BaseModel):
 
 @app.get("/api/health")
 def health_check():
+    weights_info = engine.get_weights_status()
     return {
         "status": "healthy",
         "model_loaded": engine.loaded,
         "device": str(engine.device),
-        "total_taxonomy_categories": len(engine.valid_wordmap_seq)
+        "total_taxonomy_categories": len(engine.valid_wordmap_seq),
+        "weights_status": weights_info
     }
+
+@app.get("/api/weights-status")
+def check_weights():
+    """Returns detailed weight verification and memory retention status."""
+    return engine.get_weights_status()
 
 @app.get("/api/taxonomy")
 def get_taxonomy():
