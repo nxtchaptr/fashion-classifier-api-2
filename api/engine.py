@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 import io
 import re
 import json
@@ -49,7 +50,7 @@ def download_direct_url(url, destination):
     """Downloads model weights directly from ngrok or direct cloud URL."""
     print(f"Downloading model from custom URL: {url} -> {destination}...")
     headers = {"User-Agent": "Mozilla/5.0"}
-    with requests.get(url, headers=headers, stream=True, timeout=120) as r:
+    with requests.get(url, headers=headers, stream=True, timeout=180) as r:
         r.raise_for_status()
         CHUNK_SIZE = 65536
         total_bytes = 0
@@ -110,7 +111,6 @@ class AtlasEngine:
                 model_path = p
                 break
 
-        # Check for custom download URL (e.g. ngrok or HuggingFace)
         custom_url = os.environ.get("MODEL_DOWNLOAD_URL")
         if not model_path and custom_url:
             try:
@@ -123,8 +123,13 @@ class AtlasEngine:
             checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
             self.decoder = checkpoint['decoder'].to(self.device).eval()
             self.encoder = checkpoint['encoder'].to(self.device).eval()
+            
+            # Immediately free checkpoint memory & optimizer tensors
+            del checkpoint
+            gc.collect()
+            
             self.loaded = True
-            print("Atlas Engine loaded successfully!")
+            print("Atlas Engine loaded successfully! Memory optimized.")
         else:
             print("[Warning] No model checkpoint file found. Running in standby mode.")
 

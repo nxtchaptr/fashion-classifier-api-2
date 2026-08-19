@@ -12,7 +12,12 @@ class Encoder(nn.Module):
     def __init__(self, encoded_image_size=14):
         super(Encoder, self).__init__()
         self.enc_image_size = encoded_image_size
-        resnet = torchvision.models.resnet101(pretrained=True)
+        # Do not download pretrained ImageNet weights to conserve RAM on 512MB Render Free Tier
+        try:
+            resnet = torchvision.models.resnet101(weights=None)
+        except Exception:
+            resnet = torchvision.models.resnet101(pretrained=False)
+            
         modules = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*modules)
         self.adaptive_pool = nn.AdaptiveAvgPool2d((encoded_image_size, encoded_image_size))
@@ -24,12 +29,9 @@ class Encoder(nn.Module):
         out = out.permute(0, 2, 3, 1)
         return out
 
-    def fine_tune(self, fine_tune=True):
+    def fine_tune(self, fine_tune=False):
         for p in self.resnet.parameters():
             p.requires_grad = False
-        for c in list(self.resnet.children())[5:]:
-            for p in c.parameters():
-                p.requires_grad = fine_tune
 
 
 class Attention(nn.Module):
