@@ -28,7 +28,6 @@ torch.optim.Optimizer.__setstate__ = safe_setstate
 torch.optim.Adam.__setstate__ = safe_setstate
 
 import api.models as models
-# Map 'models' namespace in sys.modules so unpickler resolves checkpoint classes
 sys.modules['models'] = models
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,9 +37,6 @@ WORD_MAP_FILE = os.path.join(CURRENT_DIR, "word_map.json")
 TAXONOMY_FILE = os.path.join(CURRENT_DIR, "taxonomy_paths.json")
 LOCAL_MODEL_FILE = os.path.join(CURRENT_DIR, "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth")
 
-# Google Drive File ID for model weights
-GDRIVE_MODEL_FILE_ID = "1UhCzuSj9fqBCdKKai62_zHEKZnxxsPSo"
-
 DEFAULT_MODEL_PATHS = [
     LOCAL_MODEL_FILE,
     os.path.join(CURRENT_DIR, "..", "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
@@ -49,43 +45,20 @@ DEFAULT_MODEL_PATHS = [
     "/tmp/BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"
 ]
 
-def download_from_gdrive(file_id, destination):
-    """Downloads model weights directly from Google Drive if not present on server."""
-    print(f"Downloading model checkpoint from Google Drive (ID: {file_id}) to {destination}...")
-    URL = "https://docs.google.com/uc?export=download"
-    session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-    
-    response = session.get(URL, params={'id': file_id}, stream=True)
-    token = None
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            token = value
-            break
-            
-    if not token and response.text and "download_warning" in response.text:
-        match = re.search(r'confirm=([0-9A-Za-z_]+)', response.text)
-        if match:
-            token = match.group(1)
-            
-    if token:
-        params = {'id': file_id, 'confirm': token}
-        response = session.get(URL, params=params, stream=True)
-    elif "uc-download-link" in response.text:
-        match = re.search(r'href="(/uc\?export=download[^"]+)"', response.text)
-        if match:
-            confirm_url = "https://docs.google.com" + match.group(1).replace("&amp;", "&")
-            response = session.get(confirm_url, stream=True)
-
-    CHUNK_SIZE = 65536
-    total_bytes = 0
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(CHUNK_SIZE):
-            if chunk:
-                f.write(chunk)
-                total_bytes += len(chunk)
-                
-    print(f"Downloaded model checkpoint: {total_bytes / (1024*1024):.2f} MB")
+def download_direct_url(url, destination):
+    """Downloads model weights directly from ngrok or direct cloud URL."""
+    print(f"Downloading model from custom URL: {url} -> {destination}...")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    with requests.get(url, headers=headers, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        CHUNK_SIZE = 65536
+        total_bytes = 0
+        with open(destination, "wb") as f:
+            for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                if chunk:
+                    f.write(chunk)
+                    total_bytes += len(chunk)
+    print(f"Download complete: {total_bytes / (1024*1024):.2f} MB")
     return destination
 
 class AtlasEngine:
@@ -130,19 +103,20 @@ class AtlasEngine:
 
             self._build_taxonomy_tree(raw_paths)
 
-        # 3. Locate or Auto-Download Model Checkpoint
+        # 3. Locate or Download Model Checkpoint
         model_path = None
         for p in DEFAULT_MODEL_PATHS:
             if os.path.exists(p) and os.path.getsize(p) > 1000000:
                 model_path = p
                 break
 
-        if not model_path:
-            # Auto-download on Render startup
+        # Check for custom download URL (e.g. ngrok or HuggingFace)
+        custom_url = os.environ.get("MODEL_DOWNLOAD_URL")
+        if not model_path and custom_url:
             try:
-                model_path = download_from_gdrive(GDRIVE_MODEL_FILE_ID, LOCAL_MODEL_FILE)
+                model_path = download_direct_url(custom_url, LOCAL_MODEL_FILE)
             except Exception as e:
-                print(f"[Error] Failed to auto-download model from Google Drive: {e}")
+                print(f"[Error] Failed to download model from MODEL_DOWNLOAD_URL ({custom_url}): {e}")
 
         if model_path and os.path.exists(model_path):
             print(f"Loading Atlas model from: {model_path}")
@@ -198,8 +172,8 @@ class AtlasEngine:
     def predict_image(self, image_pil: Image.Image, beam_size: int = 5):
         if not self.loaded:
             return {
-                "error": "Model weights not loaded on server",
-                "taxonomy_path": ["Mock", "Sample", "Item"],
+                "error": "Model weights not loaded on server. Set MODEL_DOWNLOAD_URL in Render environment.",
+                "taxonomy_path": ["Standby"],
                 "confidence_score": 0.0,
                 "attention_image_base64": None
             }
