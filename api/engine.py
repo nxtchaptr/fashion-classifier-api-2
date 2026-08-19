@@ -2,7 +2,6 @@ import os
 import sys
 import gc
 import io
-import re
 import json
 import base64
 import requests
@@ -11,22 +10,16 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import skimage.transform
 
 # Patch legacy PyTorch optimizer unpickling
 def safe_setstate(self, state):
-    if not hasattr(self, 'defaults'):
-        self.defaults = {}
-    if isinstance(state, dict):
-        for k, v in state.items():
-            setattr(self, k, v)
+    self.state = {}
+    self.param_groups = []
+    self.defaults = {}
 
 torch.optim.Optimizer.__setstate__ = safe_setstate
-torch.optim.Adam.__setstate__ = safe_setstate
+if hasattr(torch.optim, 'Adam'):
+    torch.optim.Adam.__setstate__ = safe_setstate
 
 import api.models as models
 sys.modules['models'] = models
@@ -37,12 +30,17 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORD_MAP_FILE = os.path.join(CURRENT_DIR, "word_map.json")
 TAXONOMY_FILE = os.path.join(CURRENT_DIR, "taxonomy_paths.json")
 LOCAL_MODEL_FILE = os.path.join(CURRENT_DIR, "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth")
+CLEAN_MODEL_FILE = os.path.join(CURRENT_DIR, "model_weights_bf16.pth")
 
 DEFAULT_MODEL_PATHS = [
+    CLEAN_MODEL_FILE,
+    os.path.join(CURRENT_DIR, "model_weights_clean.pth"),
     LOCAL_MODEL_FILE,
+    os.path.join(CURRENT_DIR, "..", "..", "drive-files", "trained_model.pth"),
     os.path.join(CURRENT_DIR, "..", "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    os.path.join(CURRENT_DIR, "..", "drive-files", "trained_model.pth"),
     os.path.join(CURRENT_DIR, "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
-    os.path.join(os.getcwd(), "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    "/tmp/model_weights.pth",
     "/tmp/BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"
 ]
 
@@ -104,7 +102,10 @@ class AtlasEngine:
 
             self._build_taxonomy_tree(raw_paths)
 
-        # 3. Locate or Download Model Checkpoint
+    def load_model(self):
+        if self.loaded:
+            return True
+
         model_path = None
         for p in DEFAULT_MODEL_PATHS:
             if os.path.exists(p) and os.path.getsize(p) > 1000000:
@@ -119,19 +120,51 @@ class AtlasEngine:
                 print(f"[Error] Failed to download model from MODEL_DOWNLOAD_URL ({custom_url}): {e}")
 
         if model_path and os.path.exists(model_path):
-            print(f"Loading Atlas model from: {model_path}")
-            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
-            self.decoder = checkpoint['decoder'].to(self.device).eval()
-            self.encoder = checkpoint['encoder'].to(self.device).eval()
-            
-            # Immediately free checkpoint memory & optimizer tensors
-            del checkpoint
-            gc.collect()
-            
-            self.loaded = True
-            print("Atlas Engine loaded successfully! Memory optimized.")
+            try:
+                print(f"Loading Atlas model from: {model_path} (optimized for low RAM)...")
+                checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+
+                if 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
+                    enc_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in checkpoint['encoder_state_dict'].items()}
+                    dec_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in checkpoint['decoder_state_dict'].items()}
+                elif 'encoder' in checkpoint and 'decoder' in checkpoint:
+                    raw_enc = checkpoint['encoder']
+                    raw_dec = checkpoint['decoder']
+                    enc_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in raw_enc.state_dict().items()}
+                    dec_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in raw_dec.state_dict().items()}
+                else:
+                    raise ValueError("Unrecognized checkpoint format.")
+
+                del checkpoint
+                gc.collect()
+
+                torch.set_default_dtype(torch.bfloat16)
+                self.encoder = models.Encoder().to(self.device).eval()
+                vocab_size = len(self.word_map) if self.word_map else 58
+                self.decoder = models.DecoderWithAttention(
+                    attention_dim=512,
+                    embed_dim=512,
+                    decoder_dim=512,
+                    vocab_size=vocab_size,
+                    dropout=0.0
+                ).to(self.device).eval()
+                torch.set_default_dtype(torch.float32)
+
+                self.encoder.load_state_dict(enc_sd)
+                self.decoder.load_state_dict(dec_sd)
+                del enc_sd, dec_sd
+                gc.collect()
+
+                self.loaded = True
+                print("Atlas Engine loaded successfully in bfloat16 precision! Memory footprint minimized.")
+                return True
+            except Exception as e:
+                print(f"[Error] Failed to load model weights: {e}")
+                self.loaded = False
+                return False
         else:
             print("[Warning] No model checkpoint file found. Running in standby mode.")
+            return False
 
     def _build_taxonomy_tree(self, paths):
         tree = {}
@@ -176,6 +209,9 @@ class AtlasEngine:
 
     def predict_image(self, image_pil: Image.Image, beam_size: int = 5):
         if not self.loaded:
+            self.load_model()
+
+        if not self.loaded:
             return {
                 "error": "Model weights not loaded on server. Set MODEL_DOWNLOAD_URL in Render environment.",
                 "taxonomy_path": ["Standby"],
@@ -191,9 +227,9 @@ class AtlasEngine:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        image = transform(image_pil.convert('RGB')).to(self.device).unsqueeze(0)
+        image = transform(image_pil.convert('RGB')).to(self.device).to(torch.bfloat16).unsqueeze(0)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             encoder_out = self.encoder(image)
             enc_image_size = encoder_out.size(1)
             encoder_dim = encoder_out.size(3)
@@ -204,8 +240,8 @@ class AtlasEngine:
 
             k_prev_words = torch.LongTensor([[self.word_map['<start>']]] * k).to(self.device)
             seqs = k_prev_words
-            top_k_scores = torch.zeros(k, 1).to(self.device)
-            seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size).to(self.device)
+            top_k_scores = torch.zeros(k, 1, dtype=torch.bfloat16).to(self.device)
+            seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size, dtype=torch.bfloat16).to(self.device)
 
             complete_seqs = []
             complete_seqs_alpha = []
@@ -298,6 +334,12 @@ class AtlasEngine:
 
     def _generate_attention_b64(self, image_pil: Image.Image, seq, alphas):
         try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import matplotlib.cm as cm
+            import skimage.transform
+
             image = image_pil.convert('RGB').resize([14 * 24, 14 * 24], Image.LANCZOS)
             words = [self.rev_word_map[ind] for ind in seq]
             alphas_tensor = torch.FloatTensor(alphas)
