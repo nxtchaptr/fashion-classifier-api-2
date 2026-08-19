@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas AI — Product Categorization API</title>
+  <meta name="description" content="Deep Learning Hierarchical Product Taxonomy Categorizer powered by ResNet-101 and Attention-based Constrained Beam Search.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-background"></div>
+  <div class="glow-orb orb-1"></div>
+  <div class="glow-orb orb-2"></div>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-group">
+        <div class="logo-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+        </div>
+        <div>
+          <h1 class="logo-title">Atlas AI <span class="badge">Categorizer</span></h1>
+          <p class="logo-subtitle">Hierarchical Product Taxonomy Prediction & Spatial Attention</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="status-indicator" id="statusPill">
+          <span class="pulse-dot"></span>
+          <span id="statusText">Checking API...</span>
+        </div>
+        <a href="/api/docs" target="_blank" class="docs-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+          OpenAPI Docs
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="main-grid">
+      <!-- Input Panel -->
+      <section class="card input-card">
+        <div class="card-header">
+          <h2>1. Select Product Image</h2>
+          <span class="card-tag">Upload or URL</span>
+        </div>
+
+        <div class="tabs">
+          <button class="tab-btn active" id="tabUpload" onclick="switchTab('upload')">File Upload</button>
+          <button class="tab-btn" id="tabUrl" onclick="switchTab('url')">Image URL</button>
+        </div>
+
+        <!-- Upload View -->
+        <div id="uploadView" class="tab-content active">
+          <div class="drop-zone" id="dropZone">
+            <input type="file" id="fileInput" accept="image/*" class="file-input">
+            <div class="drop-icon">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            </div>
+            <p class="drop-title">Drag & drop product image here</p>
+            <p class="drop-sub">or <span class="accent-link">browse from your computer</span></p>
+            <span class="file-limits">Supports JPG, PNG, WEBP</span>
+          </div>
+        </div>
+
+        <!-- URL View -->
+        <div id="urlView" class="tab-content">
+          <div class="url-input-group">
+            <input type="url" id="imageUrlInput" placeholder="https://example.com/clothing-item.jpg" class="text-input">
+            <button class="primary-btn" onclick="predictFromUrl()">Classify URL</button>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="settings-bar">
+          <label for="beamSize">Constrained Beam Size:</label>
+          <select id="beamSize" class="select-input">
+            <option value="3">3 (Faster)</option>
+            <option value="5" selected>5 (Recommended)</option>
+            <option value="8">8 (Exhaustive)</option>
+          </select>
+        </div>
+
+        <!-- Sample Images -->
+        <div class="samples-section">
+          <p class="samples-title">Or try a sample item:</p>
+          <div class="sample-chips">
+            <button class="sample-chip" onclick="loadSample('kurta')">Men Kurta</button>
+            <button class="sample-chip" onclick="loadSample('saree')">Silk Saree</button>
+            <button class="sample-chip" onclick="loadSample('hoodie')">Sweatshirt</button>
+            <button class="sample-chip" onclick="loadSample('blouse')">Royal Blue Blouse</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Output Panel -->
+      <section class="card output-card">
+        <div class="card-header">
+          <h2>2. Predicted Categorization</h2>
+          <span class="card-tag" id="inferTime">Realtime</span>
+        </div>
+
+        <div id="emptyState" class="empty-state">
+          <div class="empty-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+          </div>
+          <p>Upload a product image or click a sample to see hierarchical classification.</p>
+        </div>
+
+        <div id="loadingState" class="loading-state" style="display:none;">
+          <div class="spinner"></div>
+          <p>Running ResNet-101 + Constrained Beam Search...</p>
+        </div>
+
+        <div id="resultsContent" class="results-content" style="display:none;">
+          <!-- Preview & Breadcrumbs -->
+          <div class="result-top">
+            <div class="image-preview-box">
+              <img id="previewImg" src="" alt="Product Preview">
+            </div>
+            <div class="taxonomy-summary">
+              <div class="metric-group">
+                <span class="metric-label">Predicted Hierarchy Path</span>
+                <div class="breadcrumbs" id="taxonomyBreadcrumbs">
+                  <!-- Badges inserted here -->
+                </div>
+              </div>
+              <div class="metrics-row">
+                <div class="metric-card">
+                  <span class="metric-label">Confidence</span>
+                  <span class="metric-value accent-text" id="confScore">98.5%</span>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-label">Target Gender</span>
+                  <span class="metric-value" id="genderBadge">Men</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Attention Map Section -->
+          <div class="attention-section">
+            <div class="section-title-row">
+              <h3>Spatial Attention Visualizer</h3>
+              <span class="badge-sub">Model Focus by Taxonomy Step</span>
+            </div>
+            <div class="attention-box" id="attentionBox">
+              <img id="attentionImg" src="" alt="Attention Heatmap">
+            </div>
+          </div>
+
+          <!-- API JSON Output -->
+          <div class="json-section">
+            <div class="section-title-row">
+              <h3>REST API Response</h3>
+              <button class="copy-btn" onclick="copyJson()">Copy JSON</button>
+            </div>
+            <pre class="json-code"><code id="jsonOutput">{}</code></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Curl Snippet Box -->
+    <section class="curl-section card">
+      <div class="card-header">
+        <h3>cURL API Snippet</h3>
+        <span class="card-tag">Integrate anywhere</span>
+      </div>
+      <pre class="curl-code"><code>curl -X POST "https://your-vercel-domain.vercel.app/api/predict" \
+  -F "file=@product_image.jpg" \
+  -F "beam_size=5"</code></pre>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Powered by Atlas ResNet-101 Attention Model & Fast Vercel Serverless Python Engine.</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
