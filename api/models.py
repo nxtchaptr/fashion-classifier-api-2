@@ -20,14 +20,19 @@ class Encoder(nn.Module):
             
         modules = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*modules)
+        # Disable gradient tracking permanently for all layers to save memory
+        for param in self.resnet.parameters():
+            param.requires_grad = False
+
         self.adaptive_pool = nn.AdaptiveAvgPool2d((encoded_image_size, encoded_image_size))
         self.fine_tune()
 
     def forward(self, images):
-        out = self.resnet(images)
-        out = self.adaptive_pool(out)
-        out = out.permute(0, 2, 3, 1)
-        return out
+        with torch.no_grad():
+            out = self.resnet(images)
+            out = self.adaptive_pool(out)
+            out = out.permute(0, 2, 3, 1)
+            return out
 
     def fine_tune(self, fine_tune=False):
         for p in self.resnet.parameters():

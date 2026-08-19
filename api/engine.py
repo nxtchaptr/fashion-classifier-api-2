@@ -126,36 +126,52 @@ class AtlasEngine:
 
         if model_path and os.path.exists(model_path):
             try:
-                print(f"Loading Atlas model from: {model_path} (optimized for low RAM)...")
-                
+                print(f"Loading Atlas model from: {model_path} (zero-copy mmap + FP32)...")
+                import shutil
+                import tempfile
+
                 if model_path.endswith('.gz'):
-                    with gzip.open(model_path, 'rb') as gz_f:
-                        buf = io.BytesIO(gz_f.read())
-                    checkpoint = torch.load(buf, map_location=self.device, weights_only=True)
-                    del buf
+                    tmp_unpacked = os.path.join(tempfile.gettempdir(), "unpacked_model_weights.pt")
+                    with gzip.open(model_path, 'rb') as f_in:
+                        with open(tmp_unpacked, 'wb') as f_out:
+                            shutil.copyfileobj(f_in, f_out, length=65536)
+                    checkpoint = torch.load(tmp_unpacked, map_location=self.device, mmap=True, weights_only=True)
                 else:
-                    checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+                    checkpoint = torch.load(model_path, map_location=self.device, mmap=True, weights_only=False)
 
-                # Keep models in float32 for fast native AVX2 CPU SIMD execution (0.25s vs 28s)
-                self.encoder = models.Encoder().to(self.device).eval()
                 vocab_size = len(self.word_map) if self.word_map else 58
-                self.decoder = models.DecoderWithAttention(
-                    attention_dim=512,
-                    embed_dim=512,
-                    decoder_dim=512,
-                    vocab_size=vocab_size,
-                    dropout=0.0
-                ).to(self.device).eval()
 
-                enc_sd = {k: v.float() if v.is_floating_point() else v for k, v in checkpoint['encoder_state_dict'].items()}
-                dec_sd = {k: v.float() if v.is_floating_point() else v for k, v in checkpoint['decoder_state_dict'].items()}
+                # Instantiate models on meta device to avoid allocating duplicate parameter arrays
+                with torch.device('meta'):
+                    self.encoder = models.Encoder()
+                    self.decoder = models.DecoderWithAttention(
+                        attention_dim=512,
+                        embed_dim=512,
+                        decoder_dim=512,
+                        vocab_size=vocab_size,
+                        dropout=0.0
+                    )
+
+                if 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
+                    self.encoder.load_state_dict(checkpoint['encoder_state_dict'], assign=True)
+                    self.decoder.load_state_dict(checkpoint['decoder_state_dict'], assign=True)
+                elif 'encoder' in checkpoint and 'decoder' in checkpoint:
+                    self.encoder = checkpoint['encoder'].to(self.device).eval()
+                    self.decoder = checkpoint['decoder'].to(self.device).eval()
+                else:
+                    raise ValueError("Unrecognized checkpoint format.")
+
+                self.encoder.eval()
+                self.decoder.eval()
                 del checkpoint
                 gc.collect()
 
-                self.encoder.load_state_dict(enc_sd)
-                self.decoder.load_state_dict(dec_sd)
-                del enc_sd, dec_sd
-                gc.collect()
+                # Force Linux OS to reclaim unmapped heap memory
+                try:
+                    import ctypes
+                    ctypes.CDLL('libc.so.6').malloc_trim(0)
+                except Exception:
+                    pass
 
                 # Tune CPU thread concurrency for shared cloud vCPUs
                 try:
@@ -184,7 +200,7 @@ class AtlasEngine:
                 print(f"[WEIGHTS LOG] Source File: {model_path}")
                 print(f"[WEIGHTS LOG] Encoder: {enc_params:,} parameters (Weight Norm: {enc_norm:.2f})")
                 print(f"[WEIGHTS LOG] Decoder: {dec_params:,} parameters (Weight Norm: {dec_norm:.2f})")
-                print(f"[WEIGHTS LOG] Memory Status: All layer weights resident and verified intact in RAM.")
+                print(f"[WEIGHTS LOG] Memory Status: Zero-copy mmap resident in RAM without duplicate heap overhead.")
                 return True
             except Exception as e:
                 print(f"[Error] Failed to load model weights: {e}")
@@ -271,7 +287,7 @@ class AtlasEngine:
         vocab_size = len(self.word_map)
 
         transform = transforms.Compose([
-            transforms.Resize((256, 256)),
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -369,6 +385,15 @@ class AtlasEngine:
 
             log_prob = float(complete_seqs_scores[best_idx])
             prob = float(np.exp(log_prob))
+
+            # Cleanup tensors and reclaim memory immediately
+            del image, encoder_out, seqs, seqs_alpha, h, c
+            gc.collect()
+            try:
+                import ctypes
+                ctypes.CDLL('libc.so.6').malloc_trim(0)
+            except Exception:
+                pass
 
             return {
                 "gender": tokens[0] if len(tokens) > 0 else "Unassigned",
