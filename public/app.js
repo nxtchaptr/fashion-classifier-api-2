@@ -95,6 +95,11 @@ function setupDropZone() {
   });
 }
 
+let timerInterval = null;
+let pipelineTimeout1 = null;
+let pipelineTimeout2 = null;
+let pipelineTimeout3 = null;
+
 function handleFile(file) {
   if (!file.type.startsWith('image/')) {
     alert('Please select a valid image file (JPG, PNG, WebP).');
@@ -105,6 +110,7 @@ function handleFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
     document.getElementById('previewImg').src = e.target.result;
+    document.getElementById('scannerPreviewImg').src = e.target.result;
     classifyImageFile(file);
   };
   reader.readAsDataURL(file);
@@ -112,7 +118,7 @@ function handleFile(file) {
 
 // Classify from File
 async function classifyImageFile(file) {
-  setLoading(true);
+  startLoadingAnimation();
   const startTime = performance.now();
   const beamSize = document.getElementById('beamSize').value;
 
@@ -136,7 +142,7 @@ async function classifyImageFile(file) {
     checkApiHealth();
   } catch (error) {
     alert(`Error: ${error.message}`);
-    setLoading(false);
+    stopLoadingAnimation();
   }
 }
 
@@ -148,8 +154,9 @@ async function predictFromUrl() {
     return;
   }
 
-  setLoading(true);
   document.getElementById('previewImg').src = url;
+  document.getElementById('scannerPreviewImg').src = url;
+  startLoadingAnimation();
   const startTime = performance.now();
   const beamSize = document.getElementById('beamSize').value;
 
@@ -171,7 +178,7 @@ async function predictFromUrl() {
     checkApiHealth();
   } catch (error) {
     alert(`Error: ${error.message}`);
-    setLoading(false);
+    stopLoadingAnimation();
   }
 }
 
@@ -184,9 +191,72 @@ function loadSample(key) {
   predictFromUrl();
 }
 
+function startLoadingAnimation() {
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('resultsContent').style.display = 'none';
+  document.getElementById('loadingState').style.display = 'block';
+
+  const timerEl = document.getElementById('liveTimerValue');
+  const t0 = performance.now();
+
+  // Reset steps
+  const steps = ['stepUpload', 'stepResnet', 'stepBeam', 'stepAttention'];
+  steps.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.className = 'pipeline-step';
+  });
+  const step1 = document.getElementById('stepUpload');
+  if (step1) step1.className = 'pipeline-step active';
+
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    const elapsed = (performance.now() - t0) / 1000;
+    if (timerEl) timerEl.textContent = `${elapsed.toFixed(2)}s`;
+  }, 30);
+
+  // Progressive steps animation
+  clearTimeout(pipelineTimeout1);
+  clearTimeout(pipelineTimeout2);
+  clearTimeout(pipelineTimeout3);
+
+  pipelineTimeout1 = setTimeout(() => {
+    const s1 = document.getElementById('stepUpload');
+    const s2 = document.getElementById('stepResnet');
+    if (s1) s1.className = 'pipeline-step completed';
+    if (s2) s2.className = 'pipeline-step active';
+  }, 120);
+
+  pipelineTimeout2 = setTimeout(() => {
+    const s2 = document.getElementById('stepResnet');
+    const s3 = document.getElementById('stepBeam');
+    if (s2) s2.className = 'pipeline-step completed';
+    if (s3) s3.className = 'pipeline-step active';
+  }, 280);
+
+  pipelineTimeout3 = setTimeout(() => {
+    const s3 = document.getElementById('stepBeam');
+    const s4 = document.getElementById('stepAttention');
+    if (s3) s3.className = 'pipeline-step completed';
+    if (s4) s4.className = 'pipeline-step active';
+  }, 480);
+}
+
+function stopLoadingAnimation() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  clearTimeout(pipelineTimeout1);
+  clearTimeout(pipelineTimeout2);
+  clearTimeout(pipelineTimeout3);
+
+  document.getElementById('loadingState').style.display = 'none';
+}
+
 // Render Results
 function renderResults(data, elapsedMs) {
-  setLoading(false);
+  stopLoadingAnimation();
+  document.getElementById('resultsContent').style.display = 'block';
   latestJsonResponse = data;
 
   // Breadcrumbs
@@ -210,7 +280,27 @@ function renderResults(data, elapsedMs) {
   document.getElementById('confScore').textContent = `${conf}%`;
   document.getElementById('genderBadge').textContent = data.gender || 'Unassigned';
   document.getElementById('subCatBadge').textContent = data.sub_category || 'General';
-  document.getElementById('inferTime').textContent = `${elapsedMs}ms`;
+
+  // Latency & Inference Time
+  const finalLatency = data.inference_time_ms ? Math.round(data.inference_time_ms) : elapsedMs;
+  document.getElementById('inferTime').textContent = `${finalLatency} ms`;
+  
+  const latencyEl = document.getElementById('latencyScore');
+  if (latencyEl) latencyEl.textContent = `${finalLatency} ms`;
+
+  const tierBadge = document.getElementById('latencyTierBadge');
+  if (tierBadge) {
+    if (finalLatency <= 180) {
+      tierBadge.textContent = 'Ultra Fast';
+      tierBadge.className = 'latency-tier-badge ultra-fast';
+    } else if (finalLatency <= 400) {
+      tierBadge.textContent = 'Fast';
+      tierBadge.className = 'latency-tier-badge fast';
+    } else {
+      tierBadge.textContent = 'Normal';
+      tierBadge.className = 'latency-tier-badge moderate';
+    }
+  }
 
   // Attention Map
   const attentionBox = document.getElementById('attentionBox');
@@ -320,11 +410,11 @@ function renderTaxonomyTree(data) {
 
   for (const gender in tree) {
     html += `<div class="tree-gender-group">
-      <div class="tree-gender-title">👤 ${gender}</div>
+      <div class="tree-gender-title">${gender}</div>
       <div class="tree-master-list">`;
     for (const master in tree[gender]) {
       html += `<div class="tree-master-item">
-        <span class="tree-master-badge">📂 ${master}</span>
+        <span class="tree-master-badge">${master}</span>
         <div class="tree-sub-chips">`;
       const subCats = Object.keys(tree[gender][master]);
       if (subCats.length === 0) {

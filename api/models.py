@@ -9,14 +9,17 @@ class Encoder(nn.Module):
     """
     ResNet-101 Encoder for extracting spatial image features.
     """
-    def __init__(self, encoded_image_size=14):
+    def __init__(self, encoded_image_size=14, pretrained=True):
         super(Encoder, self).__init__()
         self.enc_image_size = encoded_image_size
-        # Do not download pretrained ImageNet weights to conserve RAM on 512MB Render Free Tier
         try:
-            resnet = torchvision.models.resnet101(weights=None)
+            weights = 'DEFAULT' if pretrained else None
+            resnet = torchvision.models.resnet101(weights=weights)
         except Exception:
-            resnet = torchvision.models.resnet101(pretrained=False)
+            try:
+                resnet = torchvision.models.resnet101(pretrained=pretrained)
+            except Exception:
+                resnet = torchvision.models.resnet101()
             
         modules = list(resnet.children())[:-2]
         self.resnet = nn.Sequential(*modules)

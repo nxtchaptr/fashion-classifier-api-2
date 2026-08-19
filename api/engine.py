@@ -2,6 +2,7 @@ import os
 import sys
 import gc
 import io
+import time
 import json
 import base64
 import requests
@@ -141,19 +142,28 @@ class AtlasEngine:
 
                 vocab_size = len(self.word_map) if self.word_map else 58
 
-                # Instantiate models on meta device to avoid allocating duplicate parameter arrays
-                with torch.device('meta'):
-                    self.encoder = models.Encoder()
-                    self.decoder = models.DecoderWithAttention(
-                        attention_dim=512,
-                        embed_dim=512,
-                        decoder_dim=512,
-                        vocab_size=vocab_size,
-                        dropout=0.0
-                    )
-
                 if 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
+                    with torch.device('meta'):
+                        self.encoder = models.Encoder(pretrained=False)
+                        self.decoder = models.DecoderWithAttention(
+                            attention_dim=512,
+                            embed_dim=512,
+                            decoder_dim=512,
+                            vocab_size=vocab_size,
+                            dropout=0.0
+                        )
                     self.encoder.load_state_dict(checkpoint['encoder_state_dict'], assign=True)
+                    self.decoder.load_state_dict(checkpoint['decoder_state_dict'], assign=True)
+                elif 'decoder_state_dict' in checkpoint:
+                    self.encoder = models.Encoder(pretrained=True).to(self.device)
+                    with torch.device('meta'):
+                        self.decoder = models.DecoderWithAttention(
+                            attention_dim=512,
+                            embed_dim=512,
+                            decoder_dim=512,
+                            vocab_size=vocab_size,
+                            dropout=0.0
+                        )
                     self.decoder.load_state_dict(checkpoint['decoder_state_dict'], assign=True)
                 elif 'encoder' in checkpoint and 'decoder' in checkpoint:
                     self.encoder = checkpoint['encoder'].to(self.device).eval()
@@ -293,6 +303,8 @@ class AtlasEngine:
         ])
         image = transform(image_pil.convert('RGB')).to(self.device).unsqueeze(0)
 
+        t_start = time.perf_counter()
+
         with torch.inference_mode():
             encoder_out = self.encoder(image)
             enc_image_size = encoder_out.size(1)
@@ -369,10 +381,13 @@ class AtlasEngine:
                     break
                 step += 1
 
+            t_elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
+
             if not complete_seqs:
                 return {
                     "taxonomy_path": ["Unknown"],
                     "confidence_score": 0.0,
+                    "inference_time_ms": t_elapsed_ms,
                     "attention_image_base64": None
                 }
 
@@ -402,6 +417,7 @@ class AtlasEngine:
                 "taxonomy_path": tokens,
                 "confidence_score": round(prob, 4),
                 "log_prob_score": round(log_prob, 4),
+                "inference_time_ms": t_elapsed_ms,
                 "attention_image_base64": attention_b64
             }
 
