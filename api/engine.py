@@ -36,13 +36,15 @@ GZ_MODEL_FILE = os.path.join(CURRENT_DIR, "model_weights.pt.gz")
 LOCAL_MODEL_FILE = os.path.join(CURRENT_DIR, "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth")
 
 DEFAULT_MODEL_PATHS = [
+    os.path.join(CURRENT_DIR, "..", "..", "fashion-classifier", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    os.path.join(CURRENT_DIR, "..", "fashion-classifier", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    os.path.join(CURRENT_DIR, "..", "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    os.path.join(CURRENT_DIR, "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
+    LOCAL_MODEL_FILE,
     GZ_MODEL_FILE,
     os.path.join(CURRENT_DIR, "model_weights.pt"),
-    LOCAL_MODEL_FILE,
     os.path.join(CURRENT_DIR, "..", "..", "drive-files", "trained_model.pth"),
-    os.path.join(CURRENT_DIR, "..", "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
     os.path.join(CURRENT_DIR, "..", "drive-files", "trained_model.pth"),
-    os.path.join(CURRENT_DIR, "..", "drive-files", "BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"),
     "/tmp/model_weights.pt.gz",
     "/tmp/model_weights.pth",
     "/tmp/BEST_checkpoint_atlas_1_cap_per_img_1_min_word_freq.pth"
@@ -126,7 +128,7 @@ class AtlasEngine:
 
         if model_path and os.path.exists(model_path):
             try:
-                print(f"Loading Atlas model from: {model_path} (zero-copy mmap + FP32)...")
+                print(f"Loading Atlas model from: {model_path}...")
                 import shutil
                 import tempfile
 
@@ -135,31 +137,38 @@ class AtlasEngine:
                     with gzip.open(model_path, 'rb') as f_in:
                         with open(tmp_unpacked, 'wb') as f_out:
                             shutil.copyfileobj(f_in, f_out, length=65536)
-                    checkpoint = torch.load(tmp_unpacked, map_location=self.device, mmap=True, weights_only=True)
+                    checkpoint = torch.load(tmp_unpacked, map_location=self.device, weights_only=False)
                 else:
-                    checkpoint = torch.load(model_path, map_location=self.device, mmap=True, weights_only=False)
+                    checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
 
                 vocab_size = len(self.word_map) if self.word_map else 58
 
-                # Instantiate models on meta device to avoid allocating duplicate parameter arrays
-                with torch.device('meta'):
-                    self.encoder = models.Encoder()
+                if isinstance(checkpoint, dict) and 'encoder' in checkpoint and 'decoder' in checkpoint:
+                    self.encoder = checkpoint['encoder'].to(self.device).eval()
+                    self.decoder = checkpoint['decoder'].to(self.device).eval()
+                elif isinstance(checkpoint, dict) and 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
+                    self.encoder = models.Encoder().to(self.device).eval()
                     self.decoder = models.DecoderWithAttention(
                         attention_dim=512,
                         embed_dim=512,
                         decoder_dim=512,
                         vocab_size=vocab_size,
                         dropout=0.0
-                    )
-
-                if 'encoder_state_dict' in checkpoint and 'decoder_state_dict' in checkpoint:
-                    self.encoder.load_state_dict(checkpoint['encoder_state_dict'], assign=True)
-                    self.decoder.load_state_dict(checkpoint['decoder_state_dict'], assign=True)
-                elif 'encoder' in checkpoint and 'decoder' in checkpoint:
-                    self.encoder = checkpoint['encoder'].to(self.device).eval()
-                    self.decoder = checkpoint['decoder'].to(self.device).eval()
+                    ).to(self.device).eval()
+                    self.encoder.load_state_dict(checkpoint['encoder_state_dict'])
+                    self.decoder.load_state_dict(checkpoint['decoder_state_dict'])
+                elif isinstance(checkpoint, dict) and 'decoder_state_dict' in checkpoint:
+                    self.encoder = models.Encoder().to(self.device).eval()
+                    self.decoder = models.DecoderWithAttention(
+                        attention_dim=512,
+                        embed_dim=512,
+                        decoder_dim=512,
+                        vocab_size=vocab_size,
+                        dropout=0.0
+                    ).to(self.device).eval()
+                    self.decoder.load_state_dict(checkpoint['decoder_state_dict'])
                 else:
-                    raise ValueError("Unrecognized checkpoint format.")
+                    raise ValueError(f"Unrecognized checkpoint format with keys: {list(checkpoint.keys()) if isinstance(checkpoint, dict) else type(checkpoint)}")
 
                 self.encoder.eval()
                 self.decoder.eval()

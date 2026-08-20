@@ -2,22 +2,40 @@ import os
 import io
 import base64
 import requests
+from contextlib import asynccontextmanager
 from typing import Optional, List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 from PIL import Image
 
 from api.engine import AtlasEngine
+from api.queue_manager import InferenceQueue
+
+engine = AtlasEngine.get_instance()
+inference_queue = InferenceQueue.get_instance()
+PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load model in background & start inference queue worker
+    print("[API LIFESPAN] Initializing Atlas Engine and starting Queue Worker...")
+    engine.load_model()
+    await inference_queue.start_worker()
+    yield
+    # Shutdown: Gracefully stop worker
+    print("[API LIFESPAN] Stopping Queue Worker...")
+    await inference_queue.stop_worker()
 
 app = FastAPI(
     title="Atlas Product Categorization API",
-    description="Hierarchical Product Taxonomy Prediction using Constrained Beam Search & Spatial Attention",
-    version="1.0.0",
+    description="Hierarchical Product Taxonomy Prediction using Constrained Beam Search & Spatial Attention (Queue-Backed)",
+    version="2.0.0",
     docs_url="/api/docs",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
+    lifespan=lifespan
 )
 
 # Enable CORS for frontend integrations
@@ -28,9 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-engine = AtlasEngine.get_instance()
-PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
 
 class UrlPredictionRequest(BaseModel):
     image_url: str
@@ -52,13 +67,20 @@ class CategoryPredictionResponse(BaseModel):
 @app.get("/api/health")
 def health_check():
     weights_info = engine.get_weights_status()
+    queue_info = inference_queue.get_status()
     return {
         "status": "healthy",
         "model_loaded": engine.loaded,
         "device": str(engine.device),
         "total_taxonomy_categories": len(engine.valid_wordmap_seq),
-        "weights_status": weights_info
+        "weights_status": weights_info,
+        "queue_status": queue_info
     }
+
+@app.get("/api/queue-status")
+def get_queue_status():
+    """Returns real-time inference queue telemetry and worker metrics."""
+    return inference_queue.get_status()
 
 @app.get("/api/weights-status")
 def check_weights():
@@ -79,7 +101,8 @@ async def predict_image_file(
     beam_size: int = Query(5, ge=1, le=10, description="Beam size for Constrained Beam Search")
 ):
     """
-    Predict hierarchical clothing taxonomy from an uploaded image file (JPEG/PNG/WebP).
+    Predict hierarchical clothing taxonomy from an uploaded image file (JPEG/PNG/WebP/AVIF).
+    Enqueued into async task queue for concurrency-safe inference.
     """
     try:
         contents = await file.read()
@@ -87,7 +110,7 @@ async def predict_image_file(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
 
-    result = engine.predict_image(image, beam_size=beam_size)
+    result = await inference_queue.submit(image, beam_size=beam_size)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
     return result
@@ -96,6 +119,7 @@ async def predict_image_file(
 async def predict_image_url(request: UrlPredictionRequest):
     """
     Predict hierarchical clothing taxonomy from a public image URL.
+    Enqueued into async task queue for concurrency-safe inference.
     """
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -105,7 +129,7 @@ async def predict_image_url(request: UrlPredictionRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch image from URL: {str(e)}")
 
-    result = engine.predict_image(image, beam_size=request.beam_size)
+    result = await inference_queue.submit(image, beam_size=request.beam_size)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
     return result
@@ -114,6 +138,7 @@ async def predict_image_url(request: UrlPredictionRequest):
 async def predict_image_base64(request: Base64PredictionRequest):
     """
     Predict hierarchical clothing taxonomy from a Base64-encoded image string.
+    Enqueued into async task queue for concurrency-safe inference.
     """
     try:
         b64_str = request.image_base64
@@ -124,7 +149,7 @@ async def predict_image_base64(request: Base64PredictionRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid base64 payload: {str(e)}")
 
-    result = engine.predict_image(image, beam_size=request.beam_size)
+    result = await inference_queue.submit(image, beam_size=request.beam_size)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
     return result
@@ -136,4 +161,5 @@ if os.path.exists(PUBLIC_DIR):
         return FileResponse(os.path.join(PUBLIC_DIR, "index.html"))
 
     app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="public")
+
 
